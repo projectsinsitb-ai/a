@@ -1,0 +1,220 @@
+================================================================================
+INSTRUCCIONES PARA IA: CONFIGURACIÓN SERVIDOR DHCP ISC-KEA (DEBIAN/UBUNTU)
+================================================================================
+
+OBJETIVO:
+Montar y verificar un servidor DHCP con 2 subredes (oficina y taller), 
+asegurando que las MACs de los clientes coincidan EXACTAMENTE con las 
+especificadas abajo. La configuración debe quedar PERFECTA y funcional.
+
+================================================================================
+1. HARDWARE Y RED (VERIFICAR ANTES DE EMPEZAR)
+================================================================================
+
+Interfaces de red detectadas (usar SOLO estas MACs):
+
+- enp1s0 (tarjeta "oficina"): MAC 52:54:00:00:2f:aa
+  → IP estática: 192.168.20.1/24
+  → Gateway/DNS: 192.168.20.1
+
+- enp2s0 (tarjeta "taller"): MAC 52:54:00:6c:37:52
+  → IP estática: 192.168.67.1/24 (NOTA: el ejercicio dice /16 pero la práctica 
+    usa /24 para consistencia con la máscara 255.255.255.0)
+  → Gateway/DNS: 192.168.67.1
+
+- lo (loopback): 127.0.0.1/8 (no tocar)
+
+⚠️ ADVERTENCIA: Las MACs de las capturas originales eran incorrectas. 
+   Usar ÚNICAMENTE las MACs listadas arriba. Verificar con:
+
+   $ ip link show
+   $ ip addr show
+
+================================================================================
+2. CONFIGURACIÓN DE INTERFACES (/etc/network/interfaces)
+================================================================================
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# Tarjeta OFICINA (enp1s0)
+auto enp1s0
+iface enp1s0 inet static
+    address 192.168.20.1/24
+
+# Tarjeta TALLER (enp2s0)
+auto enp2s0
+iface enp2s0 inet static
+    address 192.168.67.1/24
+
+Aplicar cambios:
+$ systemctl restart networking
+# O si usas netplan:
+$ netplan apply
+
+================================================================================
+3. FICHERO DE HOSTS CONOCIDOS (/etc/dhcp/coneguts.conf)
+================================================================================
+
+Crear el directorio si no existe:
+$ mkdir -p /etc/dhcp
+
+Contenido de /etc/dhcp/coneguts.conf (usar EXACTAMENTE estas MACs):
+
+# ============================================
+# HOSTS CONOCIDOS - OFICINA (192.168.20.5-10)
+# ============================================
+
+host pc-oficina-1 {
+    hardware ethernet 52:54:00:00:2f:aa;
+    fixed-address 192.168.20.5;
+}
+
+host pc-oficina-2 {
+    hardware ethernet 52:54:00:6c:37:52;
+    fixed-address 192.168.20.6;
+}
+
+# ============================================
+# HOSTS CONOCIDOS - TALLER (192.168.67.5-10)
+# ============================================
+
+host pc-taller-1 {
+    hardware ethernet 52:54:00:00:2f:aa;
+    fixed-address 192.168.67.5;
+}
+
+host pc-taller-2 {
+    hardware ethernet 52:54:00:6c:37:52;
+    fixed-address 192.168.67.6;
+}
+
+NOTA: Si las MACs anteriores ya están asignadas a las interfaces del servidor,
+los hosts conocidos deben usar MACs DIFERENTES. Ajustar según el entorno real.
+Las MACs de ejemplo son las de las interfaces del servidor; para clientes
+reales, usar las MACs que se detecten en cada máquina cliente.
+
+================================================================================
+4. CONFIGURACIÓN PRINCIPAL DHCP (/etc/dhcp/dhcpd.conf)
+================================================================================
+
+Contenido EXACTO:
+
+default-lease-time 600;
+max-lease-time 7200;
+authoritative;
+
+include "/etc/dhcp/coneguts.conf";
+
+# ============================================
+# SUBRED OFICINA (192.168.20.0/24)
+# ============================================
+subnet 192.168.20.0 netmask 255.255.255.0 {
+    option routers 192.168.20.1;
+    option domain-name-servers 192.168.20.1;
+
+    pool {
+        allow known-clients;
+        range 192.168.20.5 192.168.20.10;
+    }
+
+    pool {
+        deny known-clients;
+        range 192.168.20.100 192.168.20.150;
+    }
+}
+
+# ============================================
+# SUBRED TALLER (192.168.67.0/24)
+# ============================================
+subnet 192.168.67.0 netmask 255.255.255.0 {
+    option routers 192.168.67.1;
+    option domain-name-servers 192.168.67.1;
+
+    pool {
+        allow known-clients;
+        range 192.168.67.5 192.168.67.10;
+    }
+
+    pool {
+        deny known-clients;
+        range 192.168.67.100 192.168.67.150;
+    }
+}
+
+================================================================================
+5. CONFIGURAR INTERFAZ DE ESCUCHA (/etc/default/isc-dhcp-server)
+================================================================================
+
+INTERFACESv4="enp1s0 enp2s0"
+INTERFACESv6=""
+
+================================================================================
+6. ARRANCAR Y VERIFICAR SERVICIO
+================================================================================
+
+$ systemctl restart isc-dhcp-server
+$ systemctl enable isc-dhcp-server
+$ systemctl status isc-dhcp-server
+
+Verificar sintaxis:
+$ dhcpd -t -cf /etc/dhcp/dhcpd.conf
+
+Ver leases activos:
+$ cat /var/lib/dhcp/dhcpd.leases
+
+================================================================================
+7. PRUEBAS DE VERIFICACIÓN (OBLIGATORIAS)
+================================================================================
+
+A) Verificar que el servidor escucha en ambas interfaces:
+$ netstat -tuln | grep :67
+# o
+$ ss -tuln | grep :67
+
+B) Desde un cliente CONOCIDO (MAC en coneguts.conf):
+$ dhclient -v enp1s0
+# Debe obtener IP del rango 192.168.20.5-10 o 192.168.67.5-10
+
+C) Desde un cliente DESCONOCIDO:
+$ dhclient -v enp1s0
+# Debe obtener IP del rango 192.168.20.100-150 o 192.168.67.100-150
+
+D) Verificar conectividad:
+$ ping 192.168.20.1
+$ ping 192.168.67.1
+
+E) Verificar logs:
+$ journalctl -u isc-dhcp-server -f
+$ tail -f /var/log/syslog | grep dhcp
+
+================================================================================
+8. CHECKLIST FINAL (MARCAR CADA PUNTO)
+================================================================================
+
+[ ] Interfaces enp1s0 y enp2s0 tienen las MACs correctas (52:54:00:00:2f:aa y 52:54:00:6c:37:52)
+[ ] IPs estáticas configuradas: 192.168.20.1/24 y 192.168.67.1/24
+[ ] Fichero /etc/dhcp/coneguts.conf existe con MACs correctas
+[ ] Fichero /etc/dhcp/dhcpd.conf sin errores de sintaxis (dhcpd -t pasa)
+[ ] /etc/default/isc-dhcp-server tiene INTERFACESv4="enp1s0 enp2s0"
+[ ] Servicio isc-dhcp-server activo (systemctl status OK)
+[ ] Cliente conocido recibe IP de rango .5-.10
+[ ] Cliente desconocido recibe IP de rango .100-.150
+[ ] Logs sin errores
+[ ] Ambas subredes funcionan simultáneamente
+
+================================================================================
+9. SOLUCIÓN DE PROBLEMAS COMUNES
+================================================================================
+
+- Error "no free leases": Verificar que la MAC del cliente está en coneguts.conf
+- Error "not authoritative": Añadir "authoritative;" al inicio de dhcpd.conf
+- Servicio no escucha: Verificar INTERFACESv4 en /etc/default/isc-dhcp-server
+- Conflictos de IP: Verificar que no hay otro DHCP en la red
+- Firewall: Permitir UDP 67/68
+  $ iptables -A INPUT -p udp --dport 67:68 --sport 67:68 -j ACCEPT
+
+================================================================================
+FIN DE INSTRUCCIONES
+================================================================================
